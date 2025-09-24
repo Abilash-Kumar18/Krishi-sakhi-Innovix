@@ -271,4 +271,4 @@ elif st.session_state.show_chat:
         st.components.v1.html(livekit_js, height=200)
     
     # Fallback text input
-    prompt = st.chat_input("നിങ്ങളുടെ ചോദ്യം ഇവിടെ ടൈപ്പ് ചെയ്യുക
+    prompt = st.chat_input("നിങ്ങളുടെ ചോദ്യം ഇവിടെ ടൈപ്പ് ചെയ്യുക")
