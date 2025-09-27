@@ -23,7 +23,7 @@ if 'weather_data' not in st.session_state:
 # Function to get coordinates from city name (using Nominatim)
 def get_coordinates(city_name):
     url = f"https://nominatim.openstreetmap.org/search?q={city_name}&format=json&limit=1"
-    headers = {"User-Agent": "KrishiSakhiApp/1.0 (krishisakhi@example.com)"}
+    headers = {"User -Agent": "KrishiSakhiApp/1.0 (krishisakhi@example.com)"}
     try:
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
@@ -68,47 +68,102 @@ if not st.session_state.show_profile and not st.session_state.show_chat:
     st.markdown("---")
     st.write("*ഉദാഹരണം: തൃശ്ശൂർ, ബ്രിൻജാൽ, ചെറു നാട്ടിൻപുറം* (Example: Thrissur, Brinjal, Sandy loam)")
 
-# Profile Setup Section
+# Profile Setup Section (Enhanced with Personal Data and More Options)
 elif st.session_state.show_profile:
     st.header("👨‍🌾 നിങ്ങളുടെ പ്രൊഫൈൽ (Your Profile)")
     
-    # Form for profile inputs (use columns for better layout)
+    # Personal Data Section (Name and Age)
+    st.subheader("വ്യക്തിഗത വിവരങ്ങൾ (Personal Details)")
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        name = st.text_input("നിങ്ങളുടെ പേര് (Farmer's Name)", placeholder="ഉദാ: രാമൻ (e.g., Raman)")
+    with col_p2:
+        age = st.slider("പ്രായം (Age)", min_value=18, max_value=80, value=40, step=1)
+    
+    # Location and Crop (Expanded Options)
+    st.subheader("കൃഷി വിവരങ്ങൾ (Farming Details)")
     col1, col2 = st.columns(2)
     
     with col1:
-        location = st.selectbox("സ്ഥലം (Location)", ["തൃശ്ശൂർ (Thrissur)", "കൊച്ചി (Kochi)", "കോഴിക്കോട് (Kozhikode)", "മറ്റ് (Other)"])
-        crop = st.selectbox("പ്രധാന വിള (Main Crop)", ["ബ്രിൻജാൽ (Brinjal)", "പച്ചക്കറി (Vegetables)", "മരം (Trees)", "മറ്റ് (Other)"])
+        # More Locations (Kerala Districts/Cities)
+        location = st.selectbox(
+            "സ്ഥലം (Location)", 
+            [
+                "തൃശ്ശൂർ (Thrissur)", "കൊച്ചി (Kochi)", "കോഴിക്കോട് (Kozhikode)", 
+                "ആലപ്പുഴ (Alappuzha)", "എറണാകുളം (Ernakulam)", "ഇടുക്കി (Idukki)", 
+                "കണ്ണൂർ (Kannur)", "കാസർഗോഡ് (Kasaragod)", "കൊല്ലം (Kollam)", 
+                "കോട്ടയം (Kottayam)", "മലപ്പുറം (Malappuram)", "പാലക്കാട് (Palakkad)", 
+                "പത്തനംതിട്ട (Pathanamthitta)", "തിരുവനന്തപുരം (Thiruvananthapuram)", 
+                "വയനാട് (Wayanad)", "മറ്റ് (Other)"
+            ]
+        )
+        # More Crops (Common Kerala Crops)
+        crop = st.selectbox(
+            "പ്രധാന വിള (Main Crop)", 
+            [
+                "ബ്രിൻജാൽ (Brinjal)", "പച്ചക്കറി (Vegetables)", "മരം (Trees)", 
+                "നെല്ല് (Paddy/Rice)", "തെങ്ങ് (Coconut)", "വാഴപ്പഴം (Banana)", 
+                "റബ്ബർ (Rubber)", "കുരുമുളക് (Pepper)", "ആമ (Mango)", 
+                "പൈനാപ്പിൾ (Pineapple)", "ഞാൻഡ (Ginger)", "ഏലം (Cardamom)", 
+                "ചേമ്പ് (Tapioca)", "കപ്പ (Cotton)", "മറ്റ് (Other)"
+            ]
+        )
     
     with col2:
-        soil = st.selectbox("മണ്ണിന്റെ തരം (Soil Type)", ["ചെറു നാട്ടിൻപുറം (Sandy Loam)", "കള്ളമണ്ണ് (Clay)", "മറ്റ് (Other)"])
+        # More Soil Types (Lands/Fields)
+        soil = st.selectbox(
+            "മണ്ണിന്റെ തരം (Soil Type)", 
+            [
+                "ചെറു നാട്ടിൻപുറം (Sandy Loam)", "കള്ളമണ്ണ് (Clay)", 
+                "ലോമി (Loamy)", "ലാറ്ററൈറ്റ് (Laterite)", "ചുവപ്പ് മണ്ണ് (Red Soil)", 
+                "അലൂവിയൽ (Alluvial)", "കറുത്ത മണ്ണ് (Black Soil)", "പീറ്റി (Peaty)", 
+                "മറ്റ് (Other)"
+            ]
+        )
+        # New: Field Type Options
+        field_type = st.selectbox(
+            "ഫീൽഡിന്റെ തരം (Field Type)", 
+            [
+                "ജലസേചനം (Irrigated)", "മഴാബാധിതം (Rainfed)", 
+                "ടെറസ് (Terrace)", "ഉയർന്ന നിലം (Upland)", 
+                "താഴ്ന്ന നിലം (Lowland)", "മറ്റ് (Other)"
+            ]
+        )
         experience = st.slider("കൃഷി അനുഭവം (Years of Experience)", 0, 30, 5)
     
-    # Submit Button
+    # Submit Button (with Validation)
     if st.button("പ്രൊഫൈൽ സേവ് ചെയ്യുക (Save Profile)", use_container_width=True):
-        st.session_state.profile = {
-            'location': location.split(' (')[0],  # Extract city name, e.g., "തൃശ്ശൂർ"
-            'crop': crop,
-            'soil': soil,
-            'experience': experience
-        }
-        st.session_state.show_profile = False
-        st.session_state.show_chat = True
-        st.success("പ്രൊഫൈൽ സേവ് ചെയ്തു! (Profile saved!)")
-        st.rerun()  # Go to chat
+        if not name.strip():  # Validate name
+            st.error("പേര് നൽകുക! (Please enter your name.)")
+        else:
+            st.session_state.profile = {
+                'name': name.strip(),
+                'age': age,
+                'location': location.split(' (')[0] if ' (' in location else location,  # Extract city name
+                'crop': crop.split(' (')[0] if ' (' in crop else crop,
+                'soil': soil.split(' (')[0] if ' (' in soil else soil,
+                'field_type': field_type.split(' (')[0] if ' (' in field_type else field_type,
+                'experience': experience
+            }
+            st.session_state.show_profile = False
+            st.session_state.show_chat = True
+            st.success(f"പ്രൊഫൈൽ സേവ് ചെയ്തു, {name}! (Profile saved, {name}!)")
+            st.rerun()  # Go to chat
     
     # Back button
     if st.button("അടങ്ങൾ (Back to Welcome)"):
         st.session_state.show_profile = False
         st.rerun()
 
-# Chat Section with Weather
+# Chat Section with Weather (Updated Profile Display)
 elif st.session_state.show_chat:
+    name = st.session_state.profile.get('name', 'കർഷകൻ')  # Fallback
     location = st.session_state.profile.get('location', 'Thrissur')  # Fallback
-    st.header(f"💬 ചാറ്റ് - {st.session_state.profile.get('crop', 'വിള')} വിളയ്ക്കുള്ള ഉപദേശം (Chat - Advice for {st.session_state.profile.get('crop', 'Crop')})")
+    st.header(f"💬 ഹലോ {name}! {st.session_state.profile.get('crop', 'വിള')} വിളയ്ക്കുള്ള ഉപദേശം (Hello {name}! Chat - Advice for {st.session_state.profile.get('crop', 'Crop')})")
     
-    # Display saved profile
+    # Display saved profile (Enhanced with Name, Age, Field Type)
     st.subheader("നിങ്ങളുടെ പ്രൊഫൈൽ (Your Profile):")
-    profile_str = f"സ്ഥലം: {st.session_state.profile.get('location', 'N/A')}, വിള: {st.session_state.profile.get('crop', 'N/A')}, മണ്ണ്: {st.session_state.profile.get('soil', 'N/A')}, അനുഭവം: {st.session_state.profile.get('experience', 0)} വർഷം"
+    profile_str = f"പേര്: {st.session_state.profile.get('name', 'N/A')}, പ്രായം: {st.session_state.profile.get('age', 'N/A')} വയസ്സ്, സ്ഥലം: {st.session_state.profile.get('location', 'N/A')}, വിള: {st.session_state.profile.get('crop', 'N/A')}, മണ്ണ്: {st.session_state.profile.get('soil', 'N/A')}, ഫീൽഡ് തരം: {st.session_state.profile.get('field_type', 'N/A')}, അനുഭവം: {st.session_state.profile.get('experience', 0)} വർഷം"
     st.write(profile_str)
     
     # Weather Section
@@ -178,11 +233,15 @@ elif st.session_state.show_chat:
         with st.chat_message("user"):
             st.markdown(prompt)
         
-        # Generate response (rule-based fallback, now weather-aware)
+        # Generate response (rule-based fallback, now personalized with name/age/field_type)
         def generate_bot_response(user_input, profile, weather_data=None):
+            name = profile.get('name', 'കർഷകൻ')
+            age = profile.get('age', 40)
             user_input_lower = user_input.lower()
             crop = profile.get('crop', '')
             location = profile.get('location', '')
+            field_type = profile.get('field_type', '')
+            soil = profile.get('soil', '')
             
             if weather_data and 'temperature_2m' in weather_data['hourly']:
                 current_temp = weather_data['hourly']['temperature_2m'][0]
@@ -191,25 +250,4 @@ elif st.session_state.show_chat:
                 current_temp = 28  # Fallback
                 rain_prob = 0
             
-            if 'മഴ' in user_input_lower or 'rain' in user_input_lower:
-                return f"{location}യിൽ മഴ സാധ്യത {rain_prob}%. {crop} വിളയ്ക്ക് ജലം കുറയ്ക്കുക. (Rain prob {rain_prob}% in {location}. Reduce water for {crop}.)"
-            elif 'കീടം' in user_input_lower or 'pest' in user_input_lower:
-                return f"{crop}യിൽ കീടങ്ങൾ: നീരാളി സ്പ്രേ (10ml/ലിറ്റർ) ഉപയോഗിക്കുക. {profile.get('soil', '')} മണ്ണിന് അനുയോജ്യം. താപനില {current_temp}°C - കീടങ്ങൾ വർധിക്കാം. (Pests: Neem spray. Temp {current_temp}°C may increase pests.)"
-            elif 'വളം' in user_input_lower or 'fertilizer' in user_input_lower:
-                return f"{profile.get('soil', 'മണ്ണ്')}യ്ക്ക് ഓർഗാനിക് കമ്പോസ്റ്റ് 2kg/സെന്റ്. മഴ {rain_prob}% - വളം കുറയ്ക്കുക. (Compost 2kg/cent. Rain {rain_prob}% - reduce fertilizer.)"
-            else:
-                return f"കൂടുതൽ വിശദാംശങ്ങൾ പറയൂ. ഉദാ: 'മഴ' അല്ലെങ്കിൽ 'കീടം'. (Tell more. E.g., 'rain' or 'pest'.)"
-        
-        with st.chat_message("assistant"):
-            response = generate_bot_response(prompt, st.session_state.profile, st.session_state.weather_data)
-            st.markdown(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
-        
-        st.rerun()
-    
-    # Back to profile edit
-    if st.button("പ്രൊഫൈൽ എഡിറ്റ് (Edit Profile)"):
-        st.session_state.show_chat = False
-        st.session_state.show_profile = True
-        st.session_state.weather_data = None  # Clear weather on edit
-        st.rerun()
+            greeting = f"ഹലോ {name}, നിങ്ങളുടെ {age} വയസ്സിലെ അനുഭവത്തോടെ {field_type} ഫീൽഡിന്... (Hello {name}, with your"
