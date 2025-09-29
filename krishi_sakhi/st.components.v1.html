@@ -1,0 +1,7 @@
+// Replace with your firebaseConfig
+const firebaseConfig = { apiKey: "your_api_key", authDomain: "your-project.firebaseapp.com", projectId: "your-project-id", storageBucket: "your-project.appspot.com", messagingSenderId: "123456", appId: "your-app-id" };
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js';
+import { getMessaging, getToken } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-messaging.js';
+const app = initializeApp(firebaseConfig);
+const messaging = getMessaging(app);
+getToken(messaging, { vapidKey: 'your_vapid_key' }).then((token) => { console.log('FCM Token:', token); });  // Get VAPID from Firebase console > Cloud Messaging > Web config

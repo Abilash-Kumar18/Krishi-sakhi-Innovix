@@ -4,5 +4,10 @@ speechrecognition==3.10.0
 pydub==0.25.1
 huggingface-hub==0.19.4
 transformers==4.35.2
-torch==2.1.0
+torch==2.1.0+cpu
 requests==2.31.0
+streamlit-folium==0.15.0
+folium==0.15.1
+
+# New: Firebase for Push Notifications
+firebase-admin==6.2.0
