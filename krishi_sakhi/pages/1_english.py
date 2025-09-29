@@ -6,20 +6,19 @@ import speech_recognition as sr  # For transcription
 import io  # For audio handling
     
 try:
+    from streamlit_folium import folium_static
     import folium
-    from streamlit_folium import st_folium
-    FOLIUM_AVAILABLE = True
+    MAP_AVAILABLE = True
 except ImportError:
-    FOLIUM_AVAILABLE = False
-    folium = None
-    st_folium = None
-
-MAP_AVAILABLE = FOLIUM_AVAILABLE  # For map section
+    MAP_AVAILABLE = False
+    st.warning("Install 'streamlit-folium' and 'folium' for maps: pip install streamlit-folium folium")
 
 from dotenv import load_dotenv
 import os
 from huggingface_hub import InferenceClient
 import requests
+import json  # For FCM config
+import streamlit.components.v1 as components
 from datetime import datetime
 
 # Custom modules (with fallback warnings)
@@ -44,35 +43,30 @@ except ImportError:
     VOICE_AVAILABLE = False
     st.warning("Create 'utils/voice.py' for voice features. Using text-only.")
 
-# FCM Import (Safe – Set Flag on Success)
+# FCM Import (Moved to top – Safe if file missing)
 FCM_AVAILABLE = False
 try:
-    from utils.notifications import send_real_notification
-    NOTIFICATIONS_AVAILABLE = True
-    FCM_AVAILABLE = True  # Enable if import succeeds
+    from utils.notifications import send_fcm_notification
+    FCM_AVAILABLE = True
 except ImportError:
-    NOTIFICATIONS_AVAILABLE = False
-    FCM_AVAILABLE = False
-    send_real_notification = None  # Fallback: No notifications
-    st.warning("Notifications module missing. Create utils/notifications.py for Firebase pushes.")
+    st.warning("Create 'utils/notifications.py' for push alerts. Mock mode.")
 
 load_dotenv()
 
 @st.cache_resource
 def get_hf_client():
-    api_key = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_KEY")
-    if not api_key:
-        st.error("HF_TOKEN missing in .env. AI unavailable.")
-        return None
-    return InferenceClient(provider="hf-inference", api_key=api_key)
+  api_key = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_KEY")
+  if not api_key:
+      st.error("HF_TOKEN missing in .env. AI unavailable.")
+      return None
+  return InferenceClient(provider="hf-inference", api_key=api_key)
 
 def generate_ai_response(query, farmer_data, lang_code="en"):
     client = get_hf_client()  # From prior code (InferenceClient)
     if not client:
         return "AI unavailable. Add HF_TOKEN to .env."
 
-    # Use .get() assuming farmer_data is dict
-    profile_str = f"Crop: {farmer_data.get('crop', 'general')}, Location: {farmer_data.get('location_ml', 'your area')}, Soil: {farmer_data.get('soil', 'loamy')}, Farm size: {farmer_data.get('farm_size', 2)} acres."
+    profile_str = f"Crop: {getattr(farmer_data, 'crop', 'general')}, Location: {getattr(farmer_data, 'location_ml', 'your area')}, Soil: {getattr(farmer_data, 'soil', 'loamy')}, Farm size: {getattr(farmer_data, 'farm_size', 2)} acres."
 
     # System prompt (English base; adjust for lang if needed)
     system_content = "You are Krishi Sakhi, a helpful farming expert for Indian farmers in regions like Kerala. Provide simple, actionable advice in English. Focus on sustainable, practical steps. Structure response with numbered steps if possible."
@@ -96,7 +90,7 @@ def generate_ai_response(query, farmer_data, lang_code="en"):
         # Translate if Malayalam selected
         if lang_code == "ml":
             with st.spinner("Translating to Malayalam (Local)..."):
-                response = translate_local(english_response, "en", "ml")
+              response = translate_local(english_response, "en", "ml")
 
             try:
                 with st.spinner("Translating to Malayalam..."):
@@ -122,7 +116,7 @@ def generate_ai_response(query, farmer_data, lang_code="en"):
         return response if response else "No advice generated."
     except Exception as e:
         st.error(f"AI Error: {str(e)}")
-        return f"AI temporarily unavailable. Sample for '{query}': Use neem oil sprays and monitor fields daily for {farmer_data.get('crop', 'your crop')}."
+        return f"AI temporarily unavailable. Sample for '{query}': Use neem oil sprays and monitor fields daily for {getattr(farmer_data, 'crop', 'your crop')}."
 
 # Add this helper function (Local translation – Below generate_ai_response or at top)
 @st.cache_resource  # Loads model once (downloads ~300MB first time)
@@ -151,11 +145,105 @@ if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = None
     st.session_state.farmer_id = None
-    st.session_state.user = {}  # Dict for consistency
+    st.session_state.user = None
     st.session_state.voice_transcript = None
     st.session_state.ai_response = None
     if DB_AVAILABLE:
         init_db()  # Ensure tables exist
+
+# Real Firebase Config (REPLACE WITH YOUR VALUES from Firebase Console > Project Settings)
+FIREBASE_CONFIG = {
+    "apiKey": os.getenv("FIREBASE_API_KEY"),
+    "authDomain": os.getenv("FIREBASE_AUTH_DOMAIN"),
+    "projectId": os.getenv("FIREBASE_PROJECT_ID"),
+    "storageBucket": os.getenv("FIREBASE_STORAGE_BUCKET"),
+    "messagingSenderId": os.getenv("FIREBASE_MESSAGING_SENDER_ID"),
+    "appId": os.getenv("FIREBASE_APP_ID")
+}
+VAPID_KEY = os.getenv("VAPID_KEY")
+# Validate (Optional – Remove after test)
+if not all([FIREBASE_CONFIG.get("apiKey"), VAPID_KEY]):
+    st.error("Missing Firebase keys in .env – Check setup.")  # From Cloud Messaging > Web push certificates
+
+# FCM JS with Default SW Registration + Local Mock Mode (No Blob/Protocol Error)
+FCM_JS = f"""
+<script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-messaging-compat.js"></script>
+<script>
+    const firebaseConfig = {json.dumps(FIREBASE_CONFIG)};
+    firebase.initializeApp(firebaseConfig);
+    const messaging = firebase.messaging();
+    
+    // Check if Localhost (Mock Mode for Streamlit Local – Skips SW for No 404)
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    
+    if (!isLocalhost) {{
+        // Production/Deploy: Register default SW (File served at /firebase-messaging-sw.js)
+        if ('serviceWorker' in navigator) {{
+            navigator.serviceWorker.register('/firebase-messaging-sw.js')
+                .then(function(registration) {{
+                    console.log('SW registered: ', registration);
+                }})
+                .catch(function(error) {{
+                    console.error('SW registration failed: ', error);
+                }});
+        }}
+    }} else {{
+        console.log('Localhost mode: Skipping SW registration (use mock token).');
+    }}
+    
+    // Request FCM Token (With Mock Fallback – Unified to fallback_mock_)
+    window.requestFCM = function() {{
+        Notification.requestPermission().then(function(permission) {{
+            if (permission === 'granted') {{
+                if (isLocalhost) {{
+                    // Mock Token for Local Testing (Simulates Real – Unified name)
+                    const mockToken = 'fallback_mock_' + Date.now();  // Matches your token
+                    console.log('Fallback Mock Token (Local): ', mockToken);
+                    localStorage.setItem('fcm_token', mockToken);
+                    alert('✅ Mock Token Saved (Local Mode)! Full: ' + mockToken + '. Alerts will simulate.');
+                    return;
+                }}
+                
+                // Real Token (Deploy/Local with File)
+                messaging.getToken({{vapidKey: '{VAPID_KEY}'}})
+                    .then(function(token) {{
+                        console.log('Real FCM Token: ', token);
+                        localStorage.setItem('fcm_token', token);
+                        alert('✅ Real Token Saved! Check console for full token.');
+                    }})
+                    .catch(function(err) {{
+                        console.error('Real Token Error: ', err);
+                        // Fallback to Mock on Error
+                        const mockToken = 'fallback_mock_' + Date.now();
+                        localStorage.setItem('fcm_token', mockToken);
+                        console.log('Fallback Mock Token: ', mockToken);
+                        alert('⚠️ Real Token Failed (404?). Using Mock: ' + mockToken);
+                    }});
+            }} else {{
+                alert('❌ Notification permission denied.');
+            }}
+        }});
+    }};
+    
+    // View Token Helper
+    window.viewToken = function() {{
+        const token = localStorage.getItem('fcm_token');
+        if (token) {{
+            console.log('Current Token: ', token);
+            alert('Token Logged in Console (F12). Starts with: ' + token.substring(0, 20) + '...');
+        }} else {{
+            alert('No token. Click Grant first.');
+        }}
+    }};
+</script>
+<div id="fcm-section">
+    <p><strong>FCM Setup (Notifications)</strong></p>
+    <button onclick="requestFCM()">🔔 Grant Permission & Get Token</button>
+    <br><small>On localhost: Uses mock (simulates). Deploy for real pushes.</small>
+    <br><button onclick="viewToken()">🔍 View Token in Console</button>
+</div>
+"""
 
 # CSS for UI
 st.markdown("""
@@ -167,32 +255,183 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Clean Sidebar: User Profile Only + Logout
+# Sidebar: Language, Voice Test, FCM (Fixed Persistent Embed)
 with st.sidebar:
-    st.header("👤 User Profile")
-    user = st.session_state.get('user', {})  # Ensure dict
-    if user and len(user) > 0:
-        st.write(f"**Name:** {user.get('name', 'Unknown')}")
-        st.write(f"**Crop:** {user.get('crop', 'General')}")
-        st.write(f"**FCM Token:** {'Set' if user.get('fcm_token') else 'Not Set'}")
-        if FCM_AVAILABLE and user.get('fcm_token'):
-            st.success("🔔 Push Notifications: Ready")
-        else:
-            st.info("Add FCM token for push alerts.")
+    # Sidebar (Fixed: Safe Dict Default - Mirrors Malayalam)
+    st.sidebar.header("👤 User")
+    user = st.session_state.get('user', {})  # Safe: Always dict (fixes AttributeError)
+    if user and isinstance(user, dict) and len(user) > 0:  # Check non-empty dict
+        st.sidebar.write(f"Name: {user.get('name', 'Unknown')}")
+        st.sidebar.write(f"Crop: {user.get('crop', 'General')}")
     else:
-        st.info("👋 Welcome! Login to start.")
+        st.sidebar.info("👋 Welcome, Farmer! Save profile for personalized advice.")
+        
+    if VOICE_AVAILABLE and st.button("🔊 Test Voice", key='voice_test'):
+        speak_browser("Hello Farmer! I am Krishi Sakhi. How can I help with your crops?", selected_lang)
+    
+    st.subheader("🔔 Notifications Setup")
+    
+    # Grant Button (Triggers Embed + Optional Auto-Request)
+    if st.button("Grant FCM Permission & Get Token", key='grant_fcm'):
+        st.session_state.fcm_embedded = True  # Set flag
+        st.rerun()  # Rerun to show embed
+    
+    # Persistent Embed (Only if Flagged – Re-renders on Rerun)
+    if st.session_state.get('fcm_embedded', False):
+        # Fallback Config if Env Missing (Prevents JS Syntax Error)
+        safe_config = FIREBASE_CONFIG.copy()
+        for key in safe_config:
+            if not safe_config[key]:
+                safe_config[key] = ""  # Empty string for JS
+        
+        # Updated FCM_JS (With Debug + Auto-Option)
+        fcm_js_updated = f"""
+        <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js"></script>
+        <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-messaging-compat.js"></script>
+        <script>
+            console.log("FCM JS Loaded – Debug Start");
+            const firebaseConfig = {json.dumps(safe_config)};
+            try {{
+                firebase.initializeApp(firebaseConfig);
+                const messaging = firebase.messaging();
+                console.log("Firebase Initialized OK");
+            }} catch (err) {{
+                console.error("Firebase Init Error: ", err);
+            }}
+            
+            // Check if Localhost (Mock Mode for Streamlit Local – Skips SW for No 404)
+            const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            console.log("Is Localhost: ", isLocalhost);
+            
+            if (!isLocalhost) {{
+                // Production/Deploy: Register default SW (File served at /firebase-messaging-sw.js)
+                if ('serviceWorker' in navigator) {{
+                    navigator.serviceWorker.register('/firebase-messaging-sw.js')
+                        .then(function(registration) {{
+                            console.log('SW registered: ', registration);
+                        }})
+                        .catch(function(error) {{
+                            console.error('SW registration failed: ', error);
+                        }});
+                }}
+            }} else {{
+                console.log('Localhost mode: Skipping SW registration (use mock token).');
+            }}
+            
+            // Request FCM Token (With Mock Fallback – Unified to fallback_mock_)
+            window.requestFCM = function() {{
+                console.log("requestFCM Called – Requesting Permission");
+                Notification.requestPermission().then(function(permission) {{
+                    console.log("Permission: ", permission);
+                    if (permission === 'granted') {{
+                        if (isLocalhost) {{
+                            // Mock Token for Local Testing (Simulates Real – Unified name)
+                            const mockToken = 'fallback_mock_' + Date.now();  // Matches your token
+                            console.log('Fallback Mock Token (Local): ', mockToken);
+                            localStorage.setItem('fcm_token', mockToken);
+                            alert('✅ Mock Token Saved (Local Mode)! Full: ' + mockToken + '. Alerts will simulate.');
+                            // Optional: Auto-capture to Streamlit (via postMessage or poll – Advanced)
+                            return mockToken;
+                        }}
+                        
+                        // Real Token (Deploy/Local with File)
+                        messaging.getToken({{vapidKey: '{VAPID_KEY or ''}'}})
+                            .then(function(token) {{
+                                console.log('Real FCM Token: ', token);
+                                localStorage.setItem('fcm_token', token);
+                                alert('✅ Real Token Saved! Check console for full token.');
+                            }})
+                            .catch(function(err) {{
+                                console.error('Real Token Error: ', err);
+                                // Fallback to Mock on Error
+                                const mockToken = 'fallback_mock_' + Date.now();
+                                localStorage.setItem('fcm_token', mockToken);
+                                console.log('Fallback Mock Token: ', mockToken);
+                                alert('⚠️ Real Token Failed (404?). Using Mock: ' + mockToken);
+                            }});
+                    }} else {{
+                        console.log("Permission Denied");
+                        alert('❌ Notification permission denied. Reload and try again.');
+                    }}
+                }});
+            }};
+            
+            // View Token Helper
+            window.viewToken = function() {{
+                const token = localStorage.getItem('fcm_token');
+                if (token) {{
+                    console.log('Current Token: ', token);
+                    alert('Token Logged in Console (F12). Starts with: ' + token.substring(0, 20) + '...');
+                }} else {{
+                    alert('No token. Click Grant first.');
+                }}
+            }};
+            
+            // Optional: Auto-Trigger if Permission Already Granted (Uncomment for Auto)
+            // if (Notification.permission === 'granted') {{ requestFCM(); }}
+            
+            console.log("FCM JS Loaded – Ready (Click Inner Button)");
+        </script>
+        <div id="fcm-section" style="padding: 10px; border: 1px solid #ccc; border-radius: 5px; background: #f9f9f9;">
+            <p><strong>FCM Setup (Notifications)</strong></p>
+            <button onclick="requestFCM()" style="background: #4CAF50; color: white; padding: 10px; border: none; border-radius: 5px;">🔔 Grant Permission & Get Token</button>
+            <br><small>On localhost: Uses mock (simulates). Deploy for real pushes. <br>Console logs above.</small>
+            <br><button onclick="viewToken()" style="background: #2196F3; color: white; padding: 8px; border: none; border-radius: 5px;">🔍 View Token in Console</button>
+        </div>
+        """
+        components.html(fcm_js_updated, height=250)  # Increased height for visibility
+        st.info("🔔 Click the inner 'Grant Permission' button above to get mock token (local). Check F12 Console for logs.")
+    else:
+        st.info("Click 'Grant FCM' above to enable notifications setup.")
 
-    # Logout (Keep at bottom)
-    if st.session_state.logged_in:
-        st.write(f"Logged in as: {st.session_state.username}")
-        if st.button("🚪 Logout", key='logout_btn'):
-            for key in ['logged_in', 'username', 'farmer_id', 'user', 'fcm_token', 'voice_transcript', 'ai_response']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.success("Logged out successfully!")
-            st.rerun()
+    # Rest of Sidebar (Token Capture – Unchanged)
+    st.subheader("🔄 Token Capture")
+
+    # Manual Capture Button & Input
+    pasted_token = st.text_input(
+        "Paste Token from Alert/Console (e.g., fallback_mock_1759042701886):", 
+        value="", 
+        key='token_input_field'
+    )
+    if st.button("Capture Token", key='capture_token_btn'):  # Simplified – No if around input
+        if pasted_token and pasted_token.strip():
+            st.session_state.fcm_token = pasted_token.strip()
+            st.success(f"✅ Token Captured: {pasted_token[:20]}... (Ready for alerts!)")
+            st.rerun()  # Refresh to update status
+        else:
+            st.warning("Paste the full token above.")
+
+    # Status Display (Consolidated)
+    st.subheader("Token Status")
+    if st.session_state.get('fcm_token'):
+        st.success(f"🎉 Active Token: {st.session_state.fcm_token[:20]}...")
+        st.write(f"Debug: {st.session_state.fcm_token}")  # Full for dev
     else:
-        st.info("Login to access personalized features.")
+        st.warning("No token – Click inner Grant button, allow, paste here.")
+      
+    # Force Set (Unchanged)
+    if st.button("Force Set Mock Token", key='force_set'):
+        st.session_state.fcm_token = "fallback_mock_1759042701886"
+        st.success("Forced! Now test alert.")
+        st.rerun()
+        
+    # Test Button (Unchanged – Fixed Earlier)
+    if st.button("🧪 Test Captured Token Alert", key='test_captured'):
+        token = st.session_state.get('fcm_token')
+        if token:
+            if FCM_AVAILABLE:
+                success, msg = send_fcm_notification(token, "🧪 Token Test", f"Success! Token: {token[:20]}... works for alerts. 🌱")
+            else:
+                success, msg = True, "Mock alert simulated (No notifications.py – FCM disabled)."
+            msg_str = str(msg).strip() if msg else "Unknown error"
+            msg_clean = re.sub(r'<[^>]*>', '', msg_str)
+            msg_display = msg_clean[:100] + "..." if len(msg_clean) > 100 else msg_clean
+            if success:
+                st.success(msg_display)
+            else:
+                st.error(msg_display)
+        else:
+            st.warning("Capture first.")
 
 # Images
 FARMER_IMG = "https://images.unsplash.com/photo-1559827260-dc66d52bef19?ixlib=rb-4.0.3&auto=format&fit=crop&w=400"
@@ -210,53 +449,41 @@ def get_weather(location):
             humidity = data['main']['humidity']
             # Auto-send alert if rainy (example – Fixed sanitize)
             if 'rain' in condition.lower() and st.session_state.get('fcm_token') and FCM_AVAILABLE:
-                user = st.session_state.get('user', {})
-                success = send_real_notification(
-                    f"Rainy weather in {location}! Protect crops from waterlogging. Temp: {temp}°C, Humidity: {humidity}%",
-                    "warning", user
+                success, msg = send_fcm_notification(
+                    st.session_state.fcm_token,
+                    "🌧️ Rain Alert",
+                    f"Rainy weather in {location}! Protect your crops from waterlogging. Temp: {temp}°C, Humidity: {humidity}%",
+                    lang='en'
                 )
+                # Sanitize for display
+                msg_str = str(msg).strip() if msg else "Unknown error"
+                msg_clean = re.sub(r'<[^>]*>', '', msg_str)
+                msg_display = msg_clean[:100] + "..." if len(msg_clean) > 100 else msg_clean
                 if success:
-                    st.sidebar.success("🌧️ Rain alert sent!")
+                    st.sidebar.success("Alert sent!")
+                else:
+                    st.sidebar.error(msg_display)
             return f"🌤️ Temperature: {temp}°C | Condition: {condition.capitalize()} | Humidity: {humidity}%"
         else:
             return "Weather data unavailable. Check location spelling."
     except Exception as e:
         return f"Error fetching weather: {str(e)}"
 
-# 🔔 Notifications Setup (Moved from Sidebar – Simple Manual)
-if st.session_state.logged_in:
-    with st.expander("🔔 Setup Push Notifications (Firebase)"):  # Collapsible to avoid clutter
-        st.info("For push alerts: 1. Allow notifications in browser. 2. Get FCM token from console (F12 > Run Firebase JS from docs). 3. Paste below.")
-        
-        pasted_token = st.text_input(
-            "Paste FCM Token:", 
-            value=st.session_state.get('fcm_token', ''), 
-            placeholder="e.g., fallback_mock_123 or real token from console",
-            key='token_input'
-        )
-        if st.button("Save Token to Profile", key='save_token'):
-            if pasted_token.strip():
-                st.session_state.fcm_token = pasted_token.strip()
-                # Update user dict
-                if 'user' in st.session_state:
-                    st.session_state.user['fcm_token'] = pasted_token.strip()
-                st.success(f"✅ Token saved: {pasted_token[:20]}...")
-                st.rerun()
-            else:
-                st.warning("Paste a valid token.")
-        
-        # Test Button (Simple)
-        if st.button("🧪 Test Notification", key='test_notif'):
-            token = st.session_state.get('fcm_token')
-            if token and FCM_AVAILABLE:
-                user = st.session_state.get('user', {})
-                success = send_real_notification("🧪 Test Alert", "info", user)  # Use your function
-                if success:
-                    st.success("Push sent! Check device/browser.")
-                else:
-                    st.error("Send failed – Check token/setup.")
-            else:
-                st.warning("No token or FCM unavailable. Setup first.")
+# Capture Voice Transcript (From localStorage hack in voice.py)
+if st.button("Process Voice Input", key='process_voice'):  # Call after speaking
+    process_js = """
+    <script>
+    const transcript = localStorage.getItem('voice_transcript');
+    if (transcript) {
+        alert('Transcript: ' + transcript);
+        localStorage.removeItem('voice_transcript');
+    } else {
+        alert('No voice input detected. Speak first.');
+    }
+    </script>
+    """
+    components.html(process_js, height=0)
+    st.rerun()
 
 # Login Section
 st.markdown("<p class='big-text'>👨‍🌾 Welcome to Krishi Sakhi! Login</p>", unsafe_allow_html=True)  # Fixed: markdown for HTML
@@ -288,8 +515,7 @@ if not st.session_state.logged_in:
             lat, lon = 10.5276, 76.2144  # Default: Thrissur (update with geocode API later)
             data = {
                 'username': username, 'name': name, 'age': age, 'gender': gender, 'phone': phone,
-                'fcm_token': st.session_state.get('fcm_token', ''),  # Add this
-                'location_ml': location_ml, 'location_en': location_ml,
+                'fcm_token': st.session_state.fcm_token, 'location_ml': location_ml, 'location_en': location_ml,
                 'lat': lat, 'lon': lon, 'crop': crop, 'soil': soil, 'field_type': field_type,
                 'farm_size': farm_size, 'irrigation_type': irrigation_type, 'experience': experience,
                 'pests_history': pests_history, 'yield_goals': yield_goals
@@ -299,56 +525,60 @@ if not st.session_state.logged_in:
                 if saved_farmer:
                     st.session_state.farmer_id = saved_farmer.id
                     st.session_state.username = username
-                    st.session_state.user = get_farmer_data(username)  # Assume returns dict
+                    st.session_state.user = get_farmer_data(username)
+                    st.session_state.user = to_dict(st.session_state.user)
                     st.session_state.logged_in = True
                     st.success(f"✅ Welcome {name}! Profile saved. Your {crop} farm in {location_ml} is ready for advice.")
                     # Update FCM token in DB if available
                     if st.session_state.fcm_token:
                         update_farmer_token(saved_farmer.id, st.session_state.fcm_token)
-                    # Send welcome notification
-                    if FCM_AVAILABLE and st.session_state.get('fcm_token'):
-                        send_real_notification("Welcome to Krishi Sakhi! Your profile is saved. Get personalized farming alerts.", "success", st.session_state.user)
                     st.rerun()
                 else:
                     st.error("Username already exists. Choose a unique one.")
             else:
-                # Mock login – Use dict
+                # Mock login
                 st.session_state.logged_in = True
-                st.session_state.username = username
-                st.session_state.user = data  # Dict for consistency
+                st.session_state.user = {  # Dict
+                    'name': name, 'crop': crop, 'location_ml': location_ml, 'farm_size': farm_size,
+                    'soil': soil, 'irrigation_type': irrigation_type, 'lat': lat, 'lon': lon,
+                    'fcm_token': st.session_state.get('fcm_token', '')
+                }                
                 st.success(f"✅ Mock login for {name}. (Create database.py for real save.)")
-                # Send welcome notification
-                if FCM_AVAILABLE and st.session_state.get('fcm_token'):
-                    send_real_notification("Welcome to Krishi Sakhi! Your profile is saved. Get personalized farming alerts.", "success", st.session_state.user)
                 st.rerun()
         else:
             st.warning("Please fill name, username, and phone.")
 
 # Post-Login Sections
 if st.session_state.logged_in:
-    user = st.session_state.get('user', {})  # Dict
-    st.header(f"🌾 Hi {user.get('name', 'Farmer')}! Your Farm: {user.get('crop', 'General')} in {user.get('location_ml', 'Your Area')} | Size: {user.get('farm_size', 2.0)} Acres")
+    user = st.session_state.user
+    st.header(f"🌾 Hi {user.name}! Your Farm: {getattr(user, 'crop', 'General')} in {getattr(user, 'location_ml', 'Your Area')} | Size: {getattr(user, 'farm_size', 2.0)} Acres")
 
     # Weather Section
     st.header("☁️ Weather Forecast")
-    location = st.text_input("Enter Location (e.g., Kochi)", value=user.get('location_ml', ''), key='weather_loc')
+    location = st.text_input("Enter Location (e.g., Kochi)", value=getattr(user, 'location_ml', ''), key='weather_loc')
     if location:
         weather = get_weather(location)
         st.info(weather)
         if st.button("🔔 Send Weather Alert", key='weather_alert'):
-            if st.session_state.get('fcm_token') and FCM_AVAILABLE:
-                success = send_real_notification(
+            if st.session_state.fcm_token and FCM_AVAILABLE:
+                success, msg = send_fcm_notification(
+                    st.session_state.fcm_token,
+                    "Weather Update",
                     f"Current weather in {location}: {weather}",
-                    "info", user
+                    lang='en'
                 )
+                # Sanitize msg (Fix for exception)
+                msg_str = str(msg).strip() if msg else "Unknown error"
+                msg_clean = re.sub(r'<[^>]*>', '', msg_str)
+                msg_display = msg_clean[:100] + "..." if len(msg_clean) > 100 else msg_clean
                 if success:
-                    st.success("Weather push sent!")
+                    st.success(msg_display)
                 else:
-                    st.error("Send failed.")
+                    st.error(msg_display)
             else:
-                st.warning("No token or FCM unavailable.")
+                st.warning("Grant FCM permission or check setup. (Mock if no notifications.py)")
 
-    # AI Section
+       # AI Section (Insert here – After sidebar/profile, e.g., after st.header("📊 Farmer Profile"))
     st.header("🗣️ Ask Krishi Sakhi")
     st.write("Enter or speak your farming query for expert AI advice (e.g., 'Pest control for rice in rainy season').")
 
@@ -369,12 +599,12 @@ if st.session_state.logged_in:
     st.write("Upload an audio file (WAV/MP3) of your question. Speak in English or Malayalam.")
     audio_file = st.file_uploader("Choose audio file", type=['wav', 'mp3', 'm4a'], key="audio_upload")
 
-    # Transcription helper function (Inline for simplicity)
+    # Transcription helper function (Add this as a function above, or inline)
     def transcribe_audio(audio_file):
         if audio_file:
             try:
-                # Reset file pointer
-                audio_file.seek(0)
+                import speech_recognition as sr
+                import io
                 recognizer = sr.Recognizer()
                 audio_bytes = io.BytesIO(audio_file.read())
                 with sr.AudioFile(audio_bytes) as source:
@@ -389,8 +619,8 @@ if st.session_state.logged_in:
             except sr.RequestError:
                 st.error("Transcription service unavailable (check internet). Use text input.")
                 return None
-            except Exception as e:
-                st.error(f"Audio processing error: {str(e)}. Ensure file is clear.")
+            except ImportError:
+                st.error("Install speechrecognition: pip install speechrecognition pyaudio")
                 return None
         return None
 
@@ -414,28 +644,21 @@ if st.session_state.logged_in:
     # Step 5: Process & Display (Now safe – query_text always defined)
     if query_text.strip():  # Use .strip() to ignore whitespace-only
         # Fetch user data
-        user = st.session_state.get('user', {})  # Dict
+        user = st.session_state.get('user', {})  # Adapt to your session state (e.g., farmer_data)
         if not user:
             st.warning("⚠️ Please complete your profile first for personalized advice.")
             st.info("Go to profile section and set crop, location, etc.")
         else:
-            # Generate response (With lang_code)
+            # Generate response (From prior code – With lang_code)
             ai_response = generate_ai_response(query_text, user, lang_code)
             
             # Display
             st.success(f"**AI Advice ({selected_lang}):**")
             st.write(ai_response)
             
-            # Notification Trigger (Firebase Push)
-            if FCM_AVAILABLE and st.session_state.get('fcm_token'):
-                summary = ai_response[:100].replace('\n', ' ')  # Short body
-                success = send_real_notification(f"AI Advice for '{query_text[:30]}...': {summary}", "info", user)
-                if success:
-                    st.success("🔔 Advice also sent as push notification!")
-            
             # Step 6: Download (Only if response exists)
             if ai_response:
-                filename = f"krishi_sakhi_advice_{user.get('name', 'farmer')}_{lang_code}.txt"
+                filename = f"krishi_sakhi_advice_{getattr(user, 'name', 'farmer')}_{lang_code}.txt"
                 st.download_button(
                     label="📥 Download Advice (TXT)",
                     data=ai_response.encode('utf-8'),  # Handles Malayalam Unicode
@@ -444,16 +667,15 @@ if st.session_state.logged_in:
                     help="Save for offline use or printing."
                 )
 
-    # Optional: Clear button (At end of section)
-    if st.button("Clear All (Query & Audio)"):
-        st.rerun()  # Reloads page, clears inputs
-
+# Optional: Clear button (At end of section)
+if st.button("Clear All (Query & Audio)"):
+    st.rerun()  # Reloads page, clears inputs
     # Map Section (If Available)
-    st.header("🗺️ Your Farm Map")
     if MAP_AVAILABLE:
-        lat = user.get('lat', 10.5276)  # Default: Thrissur lat
-        lon = user.get('lon', 76.2144)  # Default: Thrissur lon
-        farm_size = user.get('farm_size', 2.0)  # Default 2 acres
+        st.header("🗺️ Your Farm Map")
+        lat = getattr(user, 'lat', 10.5276)  # Default: Thrissur lat
+        lon = getattr(user, 'lon', 76.2144)  # Default: Thrissur lon
+        farm_size = getattr(user, 'farm_size', 2.0)  # Default 2 acres
         
         try:
             # Create base map centered on farm
@@ -462,7 +684,7 @@ if st.session_state.logged_in:
             # Add marker for farm location
             folium.Marker(
                 [lat, lon], 
-                popup=f"<b>{user.get('crop', 'Farm')} Farm</b><br>Location: {user.get('location_ml', 'Your Area')}<br>Size: {farm_size} acres<br>Soil: {user.get('soil', 'Loamy')}",
+                popup=f"<b>{getattr(user, 'crop', 'Farm')} Farm</b><br>Location: {getattr(user, 'location_ml', 'Your Area')}<br>Size: {farm_size} acres<br>Soil: {getattr(user, 'soil', 'Loamy')}",
                 tooltip="Click for farm details",
                 icon=folium.Icon(color='green', icon='leaf')  # Green leaf icon for agriculture
             ).add_to(m)
@@ -472,7 +694,7 @@ if st.session_state.logged_in:
             folium.Circle(
                 [lat, lon],
                 radius=radius_m,
-                popup=f"Farm Boundary ({farm_size} acres)<br>Irrigation: {user.get('irrigation_type', 'Drip')}",
+                popup=f"Farm Boundary ({farm_size} acres)<br>Irrigation: {getattr(user, 'irrigation_type', 'Drip')}",
                 tooltip="Farm Area",
                 color='blue',
                 fill=True,
@@ -484,23 +706,24 @@ if st.session_state.logged_in:
             folium.LayerControl().add_to(m)
             
             # Render map in Streamlit
-            st_folium(m, width=700, height=500)
+            folium_static(m, width=700, height=500)
             
         except Exception as e:
             st.error(f"Map rendering error: {str(e)}. Install folium and check coordinates.")
-            st.info(f"Placeholder: Your farm is in {user.get('location_ml', 'your location')} – Use Google Maps for now.")
+            st.info(f"Placeholder: Your farm is in {getattr(user, 'location_ml', 'your location')} – Use Google Maps for now.")
     else:
-        st.info(f"Map feature requires 'streamlit-folium'. Install it to visualize your {user.get('location_ml', 'location')} farm.")
+        st.header("🗺️ Your Farm Map (Coming Soon)")
+        st.info(f"Map feature requires 'streamlit-folium'. Install it to visualize your {getattr(user, 'location_ml', 'location')} farm.")
         # Placeholder image
         st.image("https://images.unsplash.com/photo-1441974231531-c6227db76b6e?ixlib=rb-4.0.3&auto=format&fit=crop&w=700&h=400", caption="Sample Kerala Farm View")
 
     # Query History (If DB Available – Show Past Interactions)
-    if DB_AVAILABLE and 'farmer_id' in st.session_state and st.session_state.farmer_id:
+    if DB_AVAILABLE and hasattr(user, 'id'):
         st.header("📋 Your Past Queries")
         try:
             # Fetch from DB (add this function to backend/database.py if needed)
             conn = sqlite3.connect('krishi.db')
-            df = pd.read_sql_query("SELECT query, response, created_at FROM queries WHERE farmer_id = ? ORDER BY created_at DESC LIMIT 5", conn, params=(st.session_state.farmer_id,))
+            df = pd.read_sql_query("SELECT query, response, created_at FROM queries WHERE farmer_id = ? ORDER BY created_at DESC LIMIT 5", conn, params=(user.id,))
             conn.close()
             if not df.empty:
                 st.dataframe(df, use_container_width=True)
@@ -510,6 +733,20 @@ if st.session_state.logged_in:
             st.warning("Pandas not installed for history table. pip install pandas")
         except Exception as e:
             st.error(f"History fetch error: {e}")
+
+# Logout (In Sidebar for Easy Access)
+with st.sidebar:
+    if st.session_state.logged_in:
+        st.header("👤 Profile")
+        st.write(f"Logged in as: {st.session_state.username}")
+        if st.button("🚪 Logout", key='logout_btn'):
+            for key in ['logged_in', 'username', 'farmer_id', 'user', 'fcm_token', 'voice_transcript', 'ai_response']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.success("Logged out successfully!")
+            st.rerun()
+    else:
+        st.info("Login to access personalized features.")
 
 # Footer (Optional: App Info)
 st.markdown("---")
